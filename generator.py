@@ -9,7 +9,7 @@ from moshi.models import loaders
 from tokenizers.processors import TemplateProcessing
 from transformers import AutoTokenizer
 from watermarking import CSM_1B_GH_WATERMARK, load_watermarker, watermark
-
+import time
 
 @dataclass
 class Segment:
@@ -54,6 +54,7 @@ class Generator:
         mimi.set_num_codebooks(32)
         return mimi
 
+    @torch.inference_mode()
     def _tokenize_text_segment(self, text: str, speaker: int) -> Tuple[torch.Tensor, torch.Tensor]:
         text_tokens = self._text_tokenizer.encode(f"[{speaker}]{text}")
         text_frame = torch.zeros(len(text_tokens), 33).long()
@@ -62,6 +63,7 @@ class Generator:
         text_frame_mask[:, -1] = True
         return text_frame.to(self.device), text_frame_mask.to(self.device)
 
+    @torch.inference_mode()
     def _tokenize_audio(self, audio: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         audio = audio.to(self.device)
         audio_tokens = self._audio_tokenizer.encode(audio.unsqueeze(0).unsqueeze(0))[0]
@@ -76,11 +78,13 @@ class Generator:
 
         return audio_frame, audio_frame_mask
 
+    @torch.inference_mode()
     def _tokenize_segment(self, segment: Segment) -> Tuple[torch.Tensor, torch.Tensor]:
         text_tokens, text_masks = self._tokenize_text_segment(segment.text, segment.speaker)
         audio_tokens, audio_masks = self._tokenize_audio(segment.audio)
         return torch.cat([text_tokens, audio_tokens], dim=0), torch.cat([text_masks, audio_masks], dim=0)
 
+    @torch.inference_mode()
     def _prepare_prompt_tokens(self, text: str, speaker: int, context: List[Segment]):
         tokens, tokens_mask = zip(*[self._tokenize_segment(seg) for seg in context]) if context else ([], [])
         gen_tokens, gen_masks = self._tokenize_text_segment(text, speaker)
@@ -89,6 +93,7 @@ class Generator:
             torch.cat([*tokens_mask, gen_masks], dim=0).bool().to(self.device),
         )
 
+    @torch.inference_mode()
     def generate_stream(
             self,
             text: str,
@@ -98,22 +103,40 @@ class Generator:
             temperature=0.9,
             topk=50):
         self._model.reset_caches()
-        max_audio_frames = max_audio_length_ms // 80
+        max_generation_len = int(max_audio_length_ms / 80)
         prompt_tokens, prompt_tokens_mask = self._prepare_prompt_tokens(text, speaker, context)
 
         curr_tokens, curr_tokens_mask = prompt_tokens.unsqueeze(0), prompt_tokens_mask.unsqueeze(0)
         curr_pos = torch.arange(0, prompt_tokens.size(0)).unsqueeze(0).long().to(self.device)
-        max_seq_len = 2048 - max_audio_frames
 
-        if curr_tokens.size(1) >= max_seq_len:
-            raise ValueError(f"Inputs too long, must be below {max_seq_len}")
+        max_seq_len = 2048
+        max_context_len = max_seq_len - max_generation_len
+        if curr_tokens.size(1) >= max_context_len:
+            raise ValueError(
+                f"Inputs too long, must be below max_seq_len - max_generation_len: {max_context_len}"
+            )
 
         with self._audio_tokenizer.streaming(1):
-            for _ in range(max_audio_frames):
+
+            # Frame duration in seconds
+            frame_duration = 0.080  # 80 ms
+            sample_rate = self.sample_rate  # 24,000 Hz
+            for i in range(max_generation_len):
+                start_time = time.time()
+
                 sample = self._model.generate_frame(curr_tokens, curr_tokens_mask, curr_pos, temperature, topk)
+
                 if torch.all(sample == 0):
                     break  # EOS
+
                 yield self._audio_tokenizer.decode(sample.unsqueeze(-1)).squeeze()
+                
+                if i > 50:
+                    # Calculate elapsed time and sleep to match real-time playback
+                    elapsed_time = time.time() - start_time
+                    sleep_time = max(0, frame_duration - elapsed_time)
+                    time.sleep(sleep_time)
+
                 curr_tokens = torch.cat([sample, torch.zeros(1, 1).long().to(self.device)], dim=1).unsqueeze(1)
                 curr_tokens_mask = torch.cat([torch.ones_like(sample).bool(), torch.zeros(1, 1).bool().to(self.device)], dim=1).unsqueeze(1)
                 curr_pos = curr_pos[:, -1:] + 1
