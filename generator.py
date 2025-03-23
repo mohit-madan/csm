@@ -47,6 +47,8 @@ class Generator:
         self._audio_tokenizer = self._load_audio_tokenizer()
         self._watermarker = load_watermarker(device=self.device)
         self.sample_rate = self._audio_tokenizer.sample_rate
+        self.ctx_tokens = []
+        self.ctx_tokens_mask = []
 
     def _load_audio_tokenizer(self):
         mimi_weight = hf_hub_download(loaders.DEFAULT_REPO, loaders.MIMI_NAME)
@@ -85,9 +87,19 @@ class Generator:
         return torch.cat([text_tokens, audio_tokens], dim=0), torch.cat([text_masks, audio_masks], dim=0)
 
     @torch.inference_mode()
+    def update_ctx_tokens(self, context: List[Segment]):
+        start_time = time.time()
+        self.ctx_tokens, self.ctx_tokens_mask = zip(*[self._tokenize_segment(seg) for seg in context]) if context else ([], [])
+        duration = (time.time() - start_time)
+        print(f"update_ctx_tokens: {duration*1000:.02f} ms")
+
+    @torch.inference_mode()
     def _prepare_prompt_tokens(self, text: str, speaker: int, context: List[Segment]):
-        tokens, tokens_mask = zip(*[self._tokenize_segment(seg) for seg in context]) if context else ([], [])
+        tokens, tokens_mask = (self.ctx_tokens, self.ctx_tokens_mask)
+        start_time = time.time()
         gen_tokens, gen_masks = self._tokenize_text_segment(text, speaker)
+        duration = (time.time() - start_time)
+        print(f"_prepare_prompt_tokens: text: {duration*1000:.02f} ms")
         return (
             torch.cat([*tokens, gen_tokens], dim=0).long().to(self.device),
             torch.cat([*tokens_mask, gen_masks], dim=0).bool().to(self.device),
@@ -126,10 +138,10 @@ class Generator:
 
                 sample = self._model.generate_frame(curr_tokens, curr_tokens_mask, curr_pos, temperature, topk)
 
+                yield self._audio_tokenizer.decode(sample.unsqueeze(-1)).squeeze()
+
                 if torch.all(sample == 0):
                     break  # EOS
-
-                yield self._audio_tokenizer.decode(sample.unsqueeze(-1)).squeeze()
                 
                 if i > 50:
                     # Calculate elapsed time and sleep to match real-time playback
