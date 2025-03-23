@@ -137,14 +137,13 @@ class Generator:
             sample_rate = self.sample_rate  # 24,000 Hz
             for i in range(max_generation_len):
                 start_time = time.time()
-
                 sample = self._model.generate_frame(curr_tokens, curr_tokens_mask, curr_pos, temperature, topk)
-
-                yield self._audio_tokenizer.decode(sample.unsqueeze(-1)).squeeze()
 
                 if torch.all(sample == 0):
                     break  # EOS
-                
+
+                yield self._audio_tokenizer.decode(sample.unsqueeze(-1)).squeeze().unsqueeze(1)
+
                 if i > 50:
                     # Calculate elapsed time and sleep to match real-time playback
                     elapsed_time = time.time() - start_time

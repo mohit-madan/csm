@@ -3,7 +3,7 @@ import numpy as np
 import queue
 from generator import load_csm_1b, Segment
 import torch
-from time import time
+from time import time, sleep
 
 FRAME_SIZE = 1920
 BUFFER_SIZE = 2
@@ -35,22 +35,22 @@ class AudioStream:
     def speak(self, text):
         self.start_time = time()
         self.text = text
-        print(f"generated_segments shape is: {len(self.generated_segments)}")
         frame_iter = self.generator.generate_stream(
             self.text,
             speaker=0,
             context=self.generated_segments)
-
+        self.EOS = False
         for frame in frame_iter:
             self.audio.append(frame)
             cpu_frame = frame.detach().cpu()
-            self.q.put(cpu_frame)      
+            self.q.put(cpu_frame)
+        self.q.put(None)
 
     @torch.inference_mode()
     def callback(self, outdata, frames, time, status):
         if self.q.qsize() != self.frames_in_queue:
             self.frames_in_queue = self.q.qsize()
-            print(f"{self.frames_in_queue} frames in queue.")
+            #print(f"{self.frames_in_queue} frames in queue.")
             if self.start_time:
                 print_time(self.start_time, "Time to first frame ready for playback:")
                 self.start_time = None
@@ -62,13 +62,15 @@ class AudioStream:
             else:
                 self.is_prebuffering = False
         try:
-            new_frame = self.q.get_nowait().unsqueeze(1)
-            if torch.all(new_frame == 0): # EOS
-                print("EOS detected in stream_test!")
-                full_audio = torch.stack(self.audio).view(-1)
-                self.generated_segments.append(Segment(text=self.text, speaker=0, audio=full_audio))
-                self.generator.update_ctx_tokens(self.generated_segments)
-                self.audio = []
+            new_frame = self.q.get_nowait()
+            if new_frame == None: # EOS
+                self.EOS = True
+                outdata[:] = 0
+                if len(self.audio) > 0:
+                    full_audio = torch.stack(self.audio).view(-1)
+                    self.generated_segments.append(Segment(text=self.text, speaker=0, audio=full_audio))
+                    self.generator.update_ctx_tokens(self.generated_segments)
+                    self.audio = []
             else:
                 outdata[:] = new_frame.numpy()
         except queue.Empty:
@@ -81,9 +83,13 @@ def main():
     text = "Hello, world! Testing to stream the MIMI decoder. Please type in some text and CSM will generate the audio."
 
     while [ 1 ]:
-        for t in text.replace("\n", "").split('.'):
-            print("Sentence: ", t)
-            stream_handler.speak(t)
+        #for t in text.replace("\n", "").split('.'):
+        #    print("Sentence: ", t)
+        stream_handler.speak(text)
+        while [ 1 ]:
+            if stream_handler.EOS == True and stream_handler.q.qsize() == 0:
+                break
+            sleep(1)
         print("Type text to and hit Enter key to start streaming TTS... (empty string to quit)")
         print()
         text = input()
@@ -91,4 +97,4 @@ def main():
             break
 
 if __name__ == "__main__":
-    main() 
+    main()
