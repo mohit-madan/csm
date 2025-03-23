@@ -67,6 +67,8 @@ class Generator:
 
     @torch.inference_mode()
     def _tokenize_audio(self, audio: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        assert audio.ndim == 1, "Audio must be single channel"
+        # (K, T)
         audio = audio.to(self.device)
         audio_tokens = self._audio_tokenizer.encode(audio.unsqueeze(0).unsqueeze(0))[0]
 
