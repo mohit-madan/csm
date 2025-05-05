@@ -40,25 +40,20 @@ class TTS:
         self.sample_rate = self.generator.sample_rate
 
     @modal.method()
-    def stream(self, text: str):
+    def tts(self, text: str):
         import soundfile as sf
 
-        for frame in self.generator.generate_stream(text, speaker=0, context=[]):
-            print("Generated frame shape:", frame.shape)
-            buf = io.BytesIO()
-            sf.write(buf, frame.cpu().numpy(), self.sample_rate, format="wav")
-            buf.seek(0)
-            yield buf.read()
+        audio = self.generator.generate(text, speaker=0, context=[])
+        buf = io.BytesIO()
+        sf.write(buf, audio.cpu().numpy(), self.sample_rate, format="wav")
+        buf.seek(0)
+        return buf.read()
 
 
 @app.function()
 @modal.fastapi_endpoint(docs=True)
-def tts_stream(text: str):
-    from fastapi.responses import StreamingResponse
+def tts(text: str):
+    from fastapi.responses import Response
 
-    def stream_response():
-        for chunk in TTS().stream.remote_gen(text):
-            print(f"Chunk size: {len(chunk)} bytes")
-            yield chunk
-
-    return StreamingResponse(stream_response(), media_type="audio/wav")
+    audio_bytes = TTS().tts.remote(text)
+    return Response(audio_bytes, media_type="audio/wav")
