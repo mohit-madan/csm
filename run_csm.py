@@ -108,7 +108,7 @@ def main():
     all_audio = torch.cat([seg.audio for seg in generated_segments], dim=0)
     torchaudio.save(
         "full_conversation.wav",
-        all_audio.unsqueeze(0).cpu(),
+        all_audio.T,
         generator.sample_rate
     )
     print("Successfully generated full_conversation.wav")
