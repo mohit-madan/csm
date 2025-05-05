@@ -1,6 +1,6 @@
 import modal
-import io
 import torch
+from fastapi.responses import Response
 
 
 image = (
@@ -19,46 +19,36 @@ modal_volume = modal.Volume.from_name("csm-tts-data", create_if_missing=True)
 app = modal.App(name="csm-tts-modal", image=image, volumes={"/root/data": modal_volume})
 
 
-@app.cls(
-    gpu="H100",
-    volumes={"/root/data": modal_volume},
-    timeout=600,
-    min_containers=1,
-    secrets=[modal.Secret.from_name("huggingface-secret")],
-)
-class TTS:
-    @modal.enter()
-    def load(self):
-        import sys
+@app.function(gpu="H100", secrets=[modal.Secret.from_name("huggingface-secret")])
+def tts_streaming(text: str):
+    import sys
+    import io
+    import wave
+    import numpy as np
 
-        sys.path.append("/root/data")
-        from generator import load_csm_1b
+    sys.path.append("/root")
+    from generator import load_csm_1b
 
-        self.generator = load_csm_1b(
-            device="cuda" if torch.cuda.is_available() else "cpu"
-        )
-        self.sample_rate = self.generator.sample_rate
+    generator = load_csm_1b(device="cuda" if torch.cuda.is_available() else "cpu")
+    sample_rate = generator.sample_rate
 
-    @modal.method()
-    def stream(self, text: str):
-        import soundfile as sf
+    # Generate all audio frames
+    frame_iter = generator.generate_stream(text, speaker=0, context=[])
+    frames = [frame.cpu().numpy() for frame in frame_iter]
+    audio = np.concatenate(frames)
 
-        for frame in self.generator.generate_stream(text, speaker=0, context=[]):
-            print("Generated frame shape:", frame.shape)
-            buf = io.BytesIO()
-            sf.write(buf, frame.cpu().numpy(), self.sample_rate, format="wav")
-            buf.seek(0)
-            yield buf.read()
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sample_rate)
+        wf.writeframes((audio * 32767).astype(np.int16).tobytes())
+    buf.seek(0)
+    return buf.read()
 
 
 @app.function()
 @modal.fastapi_endpoint(docs=True)
 def tts_stream(text: str):
-    from fastapi.responses import StreamingResponse
-
-    def stream_response():
-        for chunk in TTS().stream.remote_gen(text):
-            print(f"Chunk size: {len(chunk)} bytes")
-            yield chunk
-
-    return StreamingResponse(stream_response(), media_type="audio/wav")
+    wav_bytes = tts_streaming.remote(text)
+    return Response(wav_bytes, media_type="audio/wav")
