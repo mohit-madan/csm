@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from typing import List, Tuple
-
+import os
 import torch
 import torchaudio
 from huggingface_hub import hf_hub_download
@@ -184,5 +184,5 @@ class Generator:
 
 
 def load_csm_1b(device: str = "cuda") -> Generator:
-    model = Model.from_pretrained("sesame/csm-1b").to(device=device, dtype=torch.bfloat16)
+    model = Model.from_pretrained("sesame/csm-1b", use_auth_token=os.environ["HF_TOKEN"]).to(device=device, dtype=torch.bfloat16)
     return Generator(model)
