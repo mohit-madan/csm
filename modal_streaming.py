@@ -4,6 +4,9 @@ import torch
 import asyncio
 from typing import AsyncIterator, List
 from fastapi.responses import StreamingResponse
+from huggingface_hub import hf_hub_download
+from generator import Segment
+import torchaudio
 
 
 image = (
@@ -21,13 +24,16 @@ image = (
 modal_volume = modal.Volume.from_name("csm-tts-data", create_if_missing=True)
 app = modal.App(name="csm-tts-modal", image=image, volumes={"/root/data": modal_volume})
 
+image_with_source = image.add_local_python_source("generator", "models", "watermarking")
+
 
 @app.cls(
-    gpu="H100",
+    gpu="A10G",
     volumes={"/root/data": modal_volume},
     timeout=600,
     min_containers=1,
     secrets=[modal.Secret.from_name("huggingface-secret")],
+    image=image_with_source,
 )
 class TTS:
     @modal.enter()
@@ -41,7 +47,49 @@ class TTS:
             device="cuda" if torch.cuda.is_available() else "cpu"
         )
         self.sample_rate = self.generator.sample_rate
-        self.segments = []  # To store context for multi-turn conversations
+
+        # Download prompt files
+        prompt_filepath_conversational_a = hf_hub_download(
+            repo_id="sesame/csm-1b", filename="prompts/conversational_a.wav"
+        )
+        prompt_filepath_conversational_b = hf_hub_download(
+            repo_id="sesame/csm-1b", filename="prompts/conversational_b.wav"
+        )
+
+        SPEAKER_PROMPTS = {
+            "conversational_a": {
+                "text": (
+                    "like revising for an exam I'd have to try and like keep up the momentum because I'd "
+                    "start really early I'd be like okay I'm gonna start revising now and then like "
+                    "you're revising for ages and then I just like start losing steam I didn't do that "
+                    "for the exam we had recently to be fair that was a more of a last minute scenario "
+                    "but like yeah I'm trying to like yeah I noticed this yesterday that like Mondays I "
+                    "sort of start the day with this not like a panic but like a"
+                ),
+                "audio": prompt_filepath_conversational_a
+            },
+            "conversational_b": {
+                "text": (
+                    "like a super Mario level. Like it's very like high detail. And like, once you get "
+                    "into the park, it just like, everything looks like a computer game and they have all "
+                    "these, like, you know, if, if there's like a, you know, like in a Mario game, they "
+                    "will have like a question block. And if you like, you know, punch it, a coin will "
+                    "come out. So like everyone, when they come into the park, they get like this little "
+                    "bracelet and then you can go punching question blocks around."
+                ),
+                "audio": prompt_filepath_conversational_b
+            }
+        }
+
+        self.segments = [
+            Segment(
+                text=SPEAKER_PROMPTS["conversational_a"]["text"],
+                speaker=0,
+                audio=self.load_prompt_audio(SPEAKER_PROMPTS["conversational_a"]["audio"], self.sample_rate),
+            )
+        ]
+
+        self.generator.update_ctx_tokens(self.segments)
 
     @modal.method()
     def tts_true_streaming(
@@ -106,6 +154,14 @@ class TTS:
                 Segment(text=text, speaker=speaker_id, audio=full_audio)
             )
             self.generator.update_ctx_tokens(self.segments)
+
+    def load_prompt_audio(self, audio_path, target_sample_rate):
+        audio_tensor, sample_rate = torchaudio.load(audio_path)
+        audio_tensor = audio_tensor.squeeze(0)
+        audio_tensor = torchaudio.functional.resample(
+            audio_tensor, orig_freq=sample_rate, new_freq=target_sample_rate
+        )
+        return audio_tensor
 
 
 @app.function()
