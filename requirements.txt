@@ -8,3 +8,4 @@ torchtune==0.4.0
 torchao==0.9.0
 silentcipher @ git+https://github.com/SesameAILabs/silentcipher@master
 modal==0.74.41
+websockets==15.0.1
