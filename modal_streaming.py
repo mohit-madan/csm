@@ -28,7 +28,7 @@ image_with_source = image.add_local_python_source("generator", "models", "waterm
 
 
 @app.cls(
-    gpu="A10G",
+    gpu="A100",
     volumes={"/root/data": modal_volume},
     timeout=600,
     min_containers=1,
@@ -66,7 +66,7 @@ class TTS:
                     "but like yeah I'm trying to like yeah I noticed this yesterday that like Mondays I "
                     "sort of start the day with this not like a panic but like a"
                 ),
-                "audio": prompt_filepath_conversational_a
+                "audio": prompt_filepath_conversational_a,
             },
             "conversational_b": {
                 "text": (
@@ -77,15 +77,17 @@ class TTS:
                     "come out. So like everyone, when they come into the park, they get like this little "
                     "bracelet and then you can go punching question blocks around."
                 ),
-                "audio": prompt_filepath_conversational_b
-            }
+                "audio": prompt_filepath_conversational_b,
+            },
         }
 
         self.segments = [
             Segment(
                 text=SPEAKER_PROMPTS["conversational_a"]["text"],
                 speaker=0,
-                audio=self.load_prompt_audio(SPEAKER_PROMPTS["conversational_a"]["audio"], self.sample_rate),
+                audio=self.load_prompt_audio(
+                    SPEAKER_PROMPTS["conversational_a"]["audio"], self.sample_rate
+                ),
             )
         ]
 
@@ -153,6 +155,8 @@ class TTS:
             self.segments.append(
                 Segment(text=text, speaker=speaker_id, audio=full_audio)
             )
+            # Limit context to last 5 segments to prevent unbounded growth
+            self.segments = self.segments[-5:]
             self.generator.update_ctx_tokens(self.segments)
 
     def load_prompt_audio(self, audio_path, target_sample_rate):
